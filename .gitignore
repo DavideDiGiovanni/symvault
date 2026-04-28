@@ -1,0 +1,28 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Build and distribution
+dist/
+build/
+*.egg-info/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Vault runtime data
+.vault/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
