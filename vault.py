@@ -3,6 +3,7 @@
 
 import os
 import re
+import signal
 import shutil
 from pathlib import Path
 
@@ -102,101 +103,118 @@ def scan(paths, dry_run, verbose, exclude):
             click.echo(click.style(f"[warning] not found: {t}", fg="yellow"), err=True)
 
     stats = {"new": 0, "dedup": 0, "skipped": 0, "unchanged": 0}
+    batch, COMMIT_EVERY, interrupted = 0, 100, False
+
+    def _handle_sigint(sig, frame):
+        nonlocal interrupted
+        interrupted = True
+
+    prev_handler = signal.signal(signal.SIGINT, _handle_sigint)
     skip_log = []
 
-    for fpath, st in candidates:
-        abs_path = fpath.resolve()
+    try:
+        with click.progressbar(candidates, label="Scanning", show_pos=True) as bar:
+            for fpath, st in bar:
+                if interrupted:
+                    break
+                abs_path = fpath.resolve()
 
-        if fpath.is_symlink() and VAULT_DIR in str(fpath.resolve()):
-            if verbose:
-                skip_log.append(f"already in vault: {fpath}")
-            stats["skipped"] += 1
-            continue
-        if st.st_size < MIN_SIZE:
-            if verbose:
-                skip_log.append(f"too small ({st.st_size}B): {fpath}")
-            stats["skipped"] += 1
-            continue
+                if fpath.is_symlink() and VAULT_DIR in str(fpath.resolve()):
+                    if verbose:
+                        skip_log.append(f"already in vault: {fpath}")
+                    stats["skipped"] += 1
+                    continue
+                if st.st_size < MIN_SIZE:
+                    if verbose:
+                        skip_log.append(f"too small ({st.st_size}B): {fpath}")
+                    stats["skipped"] += 1
+                    continue
 
-        rel_path = os.path.relpath(abs_path, root)
-        if is_ignored(rel_path, ignore_patterns):
-            if verbose:
-                skip_log.append(f"ignored: {rel_path}")
-            stats["skipped"] += 1
-            continue
+                rel_path = os.path.relpath(abs_path, root)
+                if is_ignored(rel_path, ignore_patterns):
+                    if verbose:
+                        skip_log.append(f"ignored: {rel_path}")
+                    stats["skipped"] += 1
+                    continue
 
-        cached = links_cache.get(rel_path)
-        if cached and cached[1] == st.st_mtime and cached[2] == st.st_size and cached[3] == st.st_ino:
-            stats["unchanged"] += 1
-            continue
+                cached = links_cache.get(rel_path)
+                if cached and cached[1] == st.st_mtime and cached[2] == st.st_size and cached[3] == st.st_ino:
+                    stats["unchanged"] += 1
+                    continue
 
-        file_hash = sha256_file(abs_path)
-        ext = fpath.suffix
+                file_hash = sha256_file(abs_path)
+                ext = fpath.suffix
 
-        if dry_run:
-            if file_hash in known_hashes:
-                click.echo(click.style("[dedup] ", fg="yellow") + rel_path)
-                stats["dedup"] += 1
-            else:
-                click.echo(click.style("[new] ", fg="green") + rel_path)
-                stats["new"] += 1
-            continue
+                if dry_run:
+                    if file_hash in known_hashes:
+                        click.echo(click.style("[dedup] ", fg="yellow") + rel_path)
+                        stats["dedup"] += 1
+                    else:
+                        click.echo(click.style("[new] ", fg="green") + rel_path)
+                        stats["new"] += 1
+                    continue
 
-        existing_path = known_hashes.get(file_hash)
-        if existing_path:
-            blob = root / existing_path
-            cur_st = fpath.stat()
-            if cur_st.st_mtime != st.st_mtime or cur_st.st_size != st.st_size:
-                if verbose:
-                    skip_log.append(f"changed during scan: {rel_path}")
-                stats["skipped"] += 1
-                continue
-            os.remove(abs_path)
-            make_vault_symlink(blob, abs_path)
-            stats["dedup"] += 1
-        else:
-            blob = vault_blob_path(root, file_hash, ext)
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.copy2(str(abs_path), str(blob))
-            except OSError as e:
-                blob.unlink(missing_ok=True)
-                click.echo(click.style(f"[error] copy failed ({e}): {rel_path}", fg="red"), err=True)
-                continue
-            if blob.stat().st_size != st.st_size:
-                blob.unlink()
-                click.echo(click.style(f"[error] copy size mismatch: {rel_path}", fg="red"), err=True)
-                continue
-            cur_st = fpath.stat()
-            if cur_st.st_mtime != st.st_mtime or cur_st.st_size != st.st_size:
-                blob.unlink()
-                if verbose:
-                    skip_log.append(f"changed during scan: {rel_path}")
-                stats["skipped"] += 1
-                continue
-            os.remove(abs_path)
-            make_vault_symlink(blob, abs_path)
-            vault_rel = str(blob.relative_to(root))
-            blob_st = blob.stat()
-            db.execute(
-                "INSERT INTO files (hash, vault_path, extension, size, first_seen, blob_mtime, blob_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (file_hash, vault_rel, ext, st.st_size, now_iso(), blob_st.st_mtime, blob_st.st_size),
-            )
-            known_hashes[file_hash] = vault_rel
-            stats["new"] += 1
+                existing_path = known_hashes.get(file_hash)
+                if existing_path:
+                    blob = root / existing_path
+                    cur_st = fpath.stat()
+                    if cur_st.st_mtime != st.st_mtime or cur_st.st_size != st.st_size:
+                        if verbose:
+                            skip_log.append(f"changed during scan: {rel_path}")
+                        stats["skipped"] += 1
+                        continue
+                    os.remove(abs_path)
+                    make_vault_symlink(blob, abs_path)
+                    stats["dedup"] += 1
+                else:
+                    blob = vault_blob_path(root, file_hash, ext)
+                    blob.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(str(abs_path), str(blob))
+                    except OSError as e:
+                        blob.unlink(missing_ok=True)
+                        click.echo(click.style(f"[error] copy failed ({e}): {rel_path}", fg="red"), err=True)
+                        continue
+                    if blob.stat().st_size != st.st_size:
+                        blob.unlink()
+                        click.echo(click.style(f"[error] copy size mismatch: {rel_path}", fg="red"), err=True)
+                        continue
+                    cur_st = fpath.stat()
+                    if cur_st.st_mtime != st.st_mtime or cur_st.st_size != st.st_size:
+                        blob.unlink()
+                        if verbose:
+                            skip_log.append(f"changed during scan: {rel_path}")
+                        stats["skipped"] += 1
+                        continue
+                    os.remove(abs_path)
+                    make_vault_symlink(blob, abs_path)
+                    vault_rel = str(blob.relative_to(root))
+                    blob_st = blob.stat()
+                    db.execute(
+                        "INSERT INTO files (hash, vault_path, extension, size, first_seen, blob_mtime, blob_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (file_hash, vault_rel, ext, st.st_size, now_iso(), blob_st.st_mtime, blob_st.st_size),
+                    )
+                    known_hashes[file_hash] = vault_rel
+                    stats["new"] += 1
 
-        new_st = fpath.lstat()
-        target_stat = fpath.stat()
-        db.execute(
-            "INSERT OR REPLACE INTO links (original_path, hash, created, mtime, size, inode) VALUES (?, ?, ?, ?, ?, ?)",
-            (rel_path, file_hash, now_iso(), target_stat.st_mtime, target_stat.st_size, new_st.st_ino),
-        )
+                new_st = fpath.lstat()
+                target_stat = fpath.stat()
+                db.execute(
+                    "INSERT OR REPLACE INTO links (original_path, hash, created, mtime, size, inode) VALUES (?, ?, ?, ?, ?, ?)",
+                    (rel_path, file_hash, now_iso(), target_stat.st_mtime, target_stat.st_size, new_st.st_ino),
+                )
+                batch += 1
+                if batch % COMMIT_EVERY == 0:
+                    db.commit()
+    finally:
+        signal.signal(signal.SIGINT, prev_handler)
+        db.commit()
+        db.close()
+        if lock:
+            release_lock(lock)
 
-    db.commit()
-    db.close()
-    if lock:
-        release_lock(lock)
-
+    if interrupted:
+        click.echo(click.style("\nInterrupted. Partial work saved.", fg="yellow"))
     if skip_log:
         click.echo(click.style(f"\nSkipped ({len(skip_log)}):", fg="blue"))
         for msg in skip_log:
