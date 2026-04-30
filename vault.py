@@ -3,6 +3,7 @@
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 import click
@@ -129,7 +130,67 @@ def scan(paths, dry_run, verbose, exclude):
             stats["unchanged"] += 1
             continue
 
-        # TODO: deduplication logic
+        file_hash = sha256_file(abs_path)
+        ext = fpath.suffix
+
+        if dry_run:
+            if file_hash in known_hashes:
+                click.echo(click.style("[dedup] ", fg="yellow") + rel_path)
+                stats["dedup"] += 1
+            else:
+                click.echo(click.style("[new] ", fg="green") + rel_path)
+                stats["new"] += 1
+            continue
+
+        existing_path = known_hashes.get(file_hash)
+        if existing_path:
+            blob = root / existing_path
+            cur_st = fpath.stat()
+            if cur_st.st_mtime != st.st_mtime or cur_st.st_size != st.st_size:
+                if verbose:
+                    skip_log.append(f"changed during scan: {rel_path}")
+                stats["skipped"] += 1
+                continue
+            os.remove(abs_path)
+            make_vault_symlink(blob, abs_path)
+            stats["dedup"] += 1
+        else:
+            blob = vault_blob_path(root, file_hash, ext)
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(str(abs_path), str(blob))
+            except OSError as e:
+                blob.unlink(missing_ok=True)
+                click.echo(click.style(f"[error] copy failed ({e}): {rel_path}", fg="red"), err=True)
+                continue
+            if blob.stat().st_size != st.st_size:
+                blob.unlink()
+                click.echo(click.style(f"[error] copy size mismatch: {rel_path}", fg="red"), err=True)
+                continue
+            cur_st = fpath.stat()
+            if cur_st.st_mtime != st.st_mtime or cur_st.st_size != st.st_size:
+                blob.unlink()
+                if verbose:
+                    skip_log.append(f"changed during scan: {rel_path}")
+                stats["skipped"] += 1
+                continue
+            os.remove(abs_path)
+            make_vault_symlink(blob, abs_path)
+            vault_rel = str(blob.relative_to(root))
+            blob_st = blob.stat()
+            db.execute(
+                "INSERT INTO files (hash, vault_path, extension, size, first_seen, blob_mtime, blob_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (file_hash, vault_rel, ext, st.st_size, now_iso(), blob_st.st_mtime, blob_st.st_size),
+            )
+            known_hashes[file_hash] = vault_rel
+            stats["new"] += 1
+
+        new_st = fpath.lstat()
+        target_stat = fpath.stat()
+        db.execute(
+            "INSERT OR REPLACE INTO links (original_path, hash, created, mtime, size, inode) VALUES (?, ?, ?, ?, ?, ?)",
+            (rel_path, file_hash, now_iso(), target_stat.st_mtime, target_stat.st_size, new_st.st_ino),
+        )
 
     db.commit()
     db.close()
