@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vault-dedup"
-version = "0.1.0"
+version = "0.2.0"
 description = "Content-addressable file deduplication with symlinks and SQLite"
 readme = "README.md"
 license = {text = "MIT"}
@@ -13,6 +13,9 @@ dependencies = ["click>=8.0"]
 
 [project.scripts]
 vault = "vault:cli"
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.setuptools]
 py-modules = ["vault", "vault_lib"]

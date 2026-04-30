@@ -2,6 +2,7 @@
 
 import fcntl
 import fnmatch
+import glob as globmod
 import hashlib
 import os
 import re
@@ -15,7 +16,7 @@ import click
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 VAULT_DIR = ".vault"
 OBJECTS_DIR = os.path.join(VAULT_DIR, "objects")
 DB_PATH = os.path.join(VAULT_DIR, "vault.db")
@@ -184,3 +185,18 @@ def human_size(n):
             return f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} PB"
+
+
+def is_glob(s):
+    return any(c in s for c in ("*", "?", "["))
+
+
+def expand_paths(patterns):
+    """Expand a list of paths/glob patterns into resolved Path objects."""
+    result = []
+    for p in patterns:
+        if is_glob(p):
+            result.extend(Path(m).resolve() for m in globmod.glob(p, recursive=True))
+        else:
+            result.append(Path(p).absolute())
+    return result
