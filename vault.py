@@ -273,5 +273,29 @@ def status(verbose):
     db.close()
 
 
+@cli.command()
+def dupes():
+    """Show duplicate files (same content, multiple symlinks)."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+    db = get_db(root)
+    rows = db.execute(
+        "SELECT f.hash, f.size, GROUP_CONCAT(l.original_path, '\n') "
+        "FROM files f JOIN links l ON f.hash = l.hash "
+        "GROUP BY f.hash HAVING COUNT(*) > 1 ORDER BY f.size DESC"
+    ).fetchall()
+    db.close()
+    if not rows:
+        click.echo("No duplicates found.")
+        return
+    for h, size, paths in rows:
+        click.echo(click.style(f"\n{h[:12]}… ({human_size(size)})", fg="yellow"))
+        for p in paths.split("\n"):
+            click.echo(f"  {p}")
+    click.echo(f"\n{len(rows)} group(s), {sum(len(r[2].split(chr(10))) - 1 for r in rows)} duplicate(s).")
+
+
 if __name__ == "__main__":
     cli()
