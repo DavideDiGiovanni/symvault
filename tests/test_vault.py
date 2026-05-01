@@ -162,3 +162,35 @@ def test_scan_exclude(vault_env):
     # jpg should be symlink, mp4 should not
     assert _is_vault_symlink(root / "photo.jpg")
     assert not (root / "video.mp4").is_symlink()
+
+# ── Test 4: Status ───────────────────────────────────────────────────────
+
+def test_status(vault_env):
+    root, runner = vault_env
+    _make_file(root / "Persone" / "matteo.jpg", 50)
+    (root / "Vacanze 2026").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "Persone" / "matteo.jpg", root / "Vacanze 2026" / "uscita03.jpg")
+    _make_file(root / "Persone" / "giulia.jpg", 30)
+    _make_file(root / "Persone" / "luca.jpg", 20)
+    runner.invoke(cli, ["scan", "."])
+
+    result = runner.invoke(cli, ["status"])
+    assert result.exit_code == 0
+    assert "Unique files in vault: 3" in result.output
+    assert "Symlinks tracked:      4" in result.output
+    assert "Duplicates removed:    1" in result.output
+
+
+# ── Test 5: Dupes ────────────────────────────────────────────────────────
+
+def test_dupes(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    shutil.copy2(root / "a.jpg", root / "b.jpg")
+    runner.invoke(cli, ["scan", "."])
+
+    result = runner.invoke(cli, ["dupes"])
+    assert result.exit_code == 0
+    assert "1 group(s)" in result.output
+    assert "a.jpg" in result.output
+    assert "b.jpg" in result.output
