@@ -226,5 +226,52 @@ def scan(paths, dry_run, verbose, exclude):
     )
 
 
+@cli.command()
+@click.option("-v", "--verbose", is_flag=True, help="Show duplicate groups and orphan details.")
+def status(verbose):
+    """Show vault statistics."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    db = get_db(root)
+    blobs = db.execute("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files").fetchone()
+    links = db.execute("SELECT COUNT(*) FROM links").fetchone()
+    duplicates = links[0] - blobs[0]
+    saved = db.execute(
+        "SELECT COALESCE(SUM(f.size), 0) FROM links l JOIN files f ON l.hash = f.hash"
+    ).fetchone()[0]
+    saved_dedup = saved - blobs[1] if saved > blobs[1] else 0
+
+    click.echo(f"Unique files in vault: {blobs[0]} ({human_size(blobs[1])})")
+    click.echo(f"Symlinks tracked:      {links[0]}")
+    click.echo(f"Duplicates removed:    {duplicates}")
+    click.echo(f"Space saved:           {click.style(human_size(saved_dedup), fg='green')}")
+
+    if verbose:
+        orphan_paths = [o for (o,) in db.execute("SELECT original_path FROM links") if not (root / o).exists()]
+        orphan_str = click.style(str(len(orphan_paths)), fg="red") if orphan_paths else str(len(orphan_paths))
+        click.echo(f"Orphan symlinks:       {orphan_str}")
+        dupe_rows = db.execute(
+            "SELECT f.hash, f.size, GROUP_CONCAT(l.original_path, '\n') "
+            "FROM files f JOIN links l ON f.hash = l.hash "
+            "GROUP BY f.hash HAVING COUNT(*) > 1 ORDER BY f.size DESC"
+        ).fetchall()
+        if dupe_rows:
+            click.echo(click.style(f"\nDuplicate groups ({len(dupe_rows)}):", fg="yellow"))
+            for h, size, paths in dupe_rows:
+                click.echo(click.style(f"  {h[:12]}… ({human_size(size)})", fg="yellow"))
+                for p in paths.split("\n"):
+                    click.echo(f"    {p}")
+        if orphan_paths:
+            click.echo(click.style(f"\nOrphan symlinks ({len(orphan_paths)}):", fg="red"))
+            for p in orphan_paths:
+                click.echo(f"  {p}")
+    else:
+        click.echo("Orphan symlinks:       (use -v to check)")
+    db.close()
+
+
 if __name__ == "__main__":
     cli()
