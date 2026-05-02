@@ -194,3 +194,41 @@ def test_dupes(vault_env):
     assert "1 group(s)" in result.output
     assert "a.jpg" in result.output
     assert "b.jpg" in result.output
+
+# ── Test 8: Revert single file ───────────────────────────────────────────
+
+def test_revert_single(vault_env):
+    root, runner = vault_env
+    _make_file(root / "Persone" / "giulia.jpg", 30)
+    runner.invoke(cli, ["scan", "."])
+    assert _is_vault_symlink(root / "Persone" / "giulia.jpg")
+
+    result = runner.invoke(cli, ["revert", str(root / "Persone" / "giulia.jpg")])
+    assert result.exit_code == 0
+    assert "Reverted 1 file(s)" in result.output
+
+    # should be a real file now
+    p = root / "Persone" / "giulia.jpg"
+    assert p.is_file() and not p.is_symlink()
+
+
+# ── Test 9: Revert all ───────────────────────────────────────────────────
+
+def test_revert_all(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    _make_file(root / "b.jpg", 20)
+    runner.invoke(cli, ["scan", "."])
+
+    result = runner.invoke(cli, ["revert", "-y"])
+    assert result.exit_code == 0
+    assert "Reverted 2 file(s)" in result.output
+
+    # all should be real files
+    assert not (root / "a.jpg").is_symlink()
+    assert not (root / "b.jpg").is_symlink()
+
+    # objects dir should be empty
+    objects = root / ".vault" / "objects"
+    remaining = list(objects.rglob("*"))
+    assert all(p.is_dir() for p in remaining)  # only empty dirs or nothing

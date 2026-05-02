@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Vault CLI — content-addressable file deduplication with symlinks."""
 
+import fnmatch
 import os
 import re
 import signal
@@ -295,6 +296,118 @@ def dupes():
         for p in paths.split("\n"):
             click.echo(f"  {p}")
     click.echo(f"\n{len(rows)} group(s), {sum(len(r[2].split(chr(10))) - 1 for r in rows)} duplicate(s).")
+
+
+@cli.command()
+@click.argument("paths", nargs=-1, type=click.Path())
+@click.option("--dry-run", is_flag=True, help="Show what would be reverted.")
+@click.option("-v", "--verbose", is_flag=True, help="Show each file being reverted.")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
+def revert(paths, dry_run, verbose, yes):
+    """Restore original files from vault. Supports paths and glob patterns."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    lock = acquire_lock(root) if not dry_run else None
+    db = get_db(root)
+    try:
+        if paths:
+            has_globs = any(is_glob(p) for p in paths)
+            if has_globs:
+                all_rows = db.execute(
+                    "SELECT l.original_path, f.vault_path FROM links l JOIN files f ON l.hash = f.hash"
+                ).fetchall()
+                matched = []
+                for p in paths:
+                    if is_glob(p):
+                        matched.extend((o, v) for o, v in all_rows if fnmatch.fnmatch(o, p) or fnmatch.fnmatch(os.path.basename(o), p))
+                    else:
+                        target = os.path.relpath(Path(p).absolute(), root)
+                        matched.extend((o, v) for o, v in all_rows if o == target or o.startswith(target + os.sep))
+                seen, rows = set(), []
+                for o, v in matched:
+                    if o not in seen:
+                        seen.add(o)
+                        rows.append((o, v))
+            else:
+                rows, seen = [], set()
+                for p in paths:
+                    target = os.path.relpath(Path(p).absolute(), root)
+                    for r in db.execute(
+                        "SELECT l.original_path, f.vault_path FROM links l JOIN files f ON l.hash = f.hash "
+                        "WHERE l.original_path = ? OR l.original_path LIKE ?",
+                        (target, target + os.sep + "%"),
+                    ):
+                        if r[0] not in seen:
+                            seen.add(r[0])
+                            rows.append(r)
+        else:
+            rows = db.execute(
+                "SELECT l.original_path, f.vault_path FROM links l JOIN files f ON l.hash = f.hash"
+            ).fetchall()
+
+        if not rows:
+            click.echo("Nothing to revert.")
+            return
+        if not paths and not dry_run and not yes:
+            click.confirm(f"Revert ALL {len(rows)} file(s) from vault?", abort=True)
+
+        count, errors = 0, 0
+        for orig, vault_rel in rows:
+            abs_orig, abs_blob = root / orig, root / vault_rel
+            if dry_run:
+                click.echo(f"[revert] {orig}")
+                count += 1
+                continue
+            if not abs_blob.exists():
+                click.echo(click.style(f"[error] blob missing: {vault_rel}", fg="red"), err=True)
+                errors += 1
+                continue
+            tmp = abs_orig.parent / (abs_orig.name + ".vault_tmp")
+            try:
+                shutil.copy2(str(abs_blob), str(tmp))
+            except OSError as e:
+                tmp.unlink(missing_ok=True)
+                click.echo(click.style(f"[error] copy failed ({e}): {orig}", fg="red"), err=True)
+                errors += 1
+                continue
+            try:
+                if abs_orig.is_symlink() or abs_orig.exists():
+                    abs_orig.unlink()
+                tmp.rename(abs_orig)
+            except OSError as e:
+                tmp.unlink(missing_ok=True)
+                click.echo(click.style(f"[error] rename failed ({e}): {orig}", fg="red"), err=True)
+                errors += 1
+                continue
+            db.execute("DELETE FROM links WHERE original_path = ?", (orig,))
+            if verbose:
+                click.echo(f"  {orig} ← {vault_rel}")
+            count += 1
+
+        if not dry_run:
+            for _, vp in db.execute(
+                "SELECT hash, vault_path FROM files WHERE hash NOT IN (SELECT DISTINCT hash FROM links)"
+            ):
+                blob = root / vp
+                if blob.exists():
+                    blob.unlink()
+                    try:
+                        blob.parent.rmdir()
+                    except OSError:
+                        pass
+            db.execute("DELETE FROM files WHERE hash NOT IN (SELECT DISTINCT hash FROM links)")
+            db.commit()
+
+        click.echo(f"Reverted {click.style(str(count), fg='green')} file(s).")
+        if errors:
+            click.echo(click.style(f"{errors} error(s) — run 'vault verify' to check.", fg="red"))
+    finally:
+        db.close()
+        if lock:
+            release_lock(lock)
 
 
 if __name__ == "__main__":
