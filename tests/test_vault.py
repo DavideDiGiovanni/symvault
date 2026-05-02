@@ -232,3 +232,25 @@ def test_revert_all(vault_env):
     objects = root / ".vault" / "objects"
     remaining = list(objects.rglob("*"))
     assert all(p.is_dir() for p in remaining)  # only empty dirs or nothing
+
+# ── Test 10: Delete (hard delete) ────────────────────────────────────────
+
+def test_delete(vault_env):
+    root, runner = vault_env
+    _make_file(root / "Persone" / "matteo.jpg", 50)
+    (root / "Vacanze 2026").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "Persone" / "matteo.jpg", root / "Vacanze 2026" / "uscita03.jpg")
+    runner.invoke(cli, ["scan", "."])
+
+    # dry-run first
+    result = runner.invoke(cli, ["delete", "--dry-run", str(root / "Persone" / "matteo.jpg")])
+    assert result.exit_code == 0
+    assert "uscita03.jpg" in result.output  # shows all symlinks
+
+    # actual delete
+    result = runner.invoke(cli, ["delete", "-y", str(root / "Persone" / "matteo.jpg")])
+    assert result.exit_code == 0
+    assert "Deleted blob + 2 symlink(s)" in result.output
+
+    assert not (root / "Persone" / "matteo.jpg").exists()
+    assert not (root / "Vacanze 2026" / "uscita03.jpg").exists()

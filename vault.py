@@ -410,5 +410,63 @@ def revert(paths, dry_run, verbose, yes):
             release_lock(lock)
 
 
+@cli.command()
+@click.argument("path", type=click.Path())
+@click.option("--dry-run", is_flag=True, help="Show what would be deleted.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def delete(path, dry_run, yes):
+    """Hard delete: remove blob and all its symlinks."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    lock = acquire_lock(root) if not dry_run else None
+    db = get_db(root)
+    try:
+        target = os.path.relpath(Path(path).absolute(), root)
+        row = db.execute("SELECT hash FROM links WHERE original_path = ?", (target,)).fetchone()
+        if not row:
+            click.echo(f"No vault entry for: {target}", err=True)
+            raise SystemExit(1)
+
+        file_hash = row[0]
+        blob_row = db.execute("SELECT vault_path, size FROM files WHERE hash = ?", (file_hash,)).fetchone()
+        all_links = db.execute("SELECT original_path FROM links WHERE hash = ?", (file_hash,)).fetchall()
+
+        click.echo(click.style(f"Blob:  {blob_row[0]} ({human_size(blob_row[1])})", fg="red"))
+        click.echo(f"Hash:  {file_hash}")
+        click.echo(click.style(f"Symlinks ({len(all_links)}):", fg="red"))
+        for (orig,) in all_links:
+            click.echo(f"  {orig}")
+
+        if dry_run:
+            return
+        if not yes:
+            click.confirm("Permanently delete this file and all its symlinks?", abort=True)
+
+        for (orig,) in all_links:
+            p = root / orig
+            if p.is_symlink():
+                p.unlink()
+
+        blob_path = root / blob_row[0]
+        if blob_path.exists():
+            blob_path.unlink()
+            try:
+                blob_path.parent.rmdir()
+            except OSError:
+                pass
+
+        db.execute("DELETE FROM links WHERE hash = ?", (file_hash,))
+        db.execute("DELETE FROM files WHERE hash = ?", (file_hash,))
+        db.commit()
+        click.echo(click.style(f"Deleted blob + {len(all_links)} symlink(s).", fg="red"))
+    finally:
+        db.close()
+        if lock:
+            release_lock(lock)
+
+
 if __name__ == "__main__":
     cli()
