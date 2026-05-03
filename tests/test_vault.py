@@ -254,3 +254,54 @@ def test_delete(vault_env):
 
     assert not (root / "Persone" / "matteo.jpg").exists()
     assert not (root / "Vacanze 2026" / "uscita03.jpg").exists()
+
+# ── Test 11: Verify with corruption ──────────────────────────────────────
+
+def test_verify_corrupt(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    runner.invoke(cli, ["scan", "."])
+
+    # corrupt the blob
+    blob = (root / "a.jpg").resolve()
+    blob.write_text("corrupted")
+
+    result = runner.invoke(cli, ["verify"])
+    assert "Corrupt" in result.output or "corrupt" in result.output
+
+
+def test_verify_orphan_blob(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    runner.invoke(cli, ["scan", "."])
+
+    # create orphan blob
+    orphan_dir = root / ".vault" / "objects" / "zz"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    (orphan_dir / "test.dat").write_text("orphan")
+
+    result = runner.invoke(cli, ["verify"])
+    assert "Orphan" in result.output or "orphan" in result.output
+
+
+# ── Test 12: Verify with rename ──────────────────────────────────────────
+
+def test_verify_rename(vault_env):
+    root, runner = vault_env
+    _make_file(root / "Persone" / "matteo.jpg", 50)
+    runner.invoke(cli, ["scan", "."])
+
+    # rename the symlink
+    (root / "Persone" / "matteo.jpg").rename(root / "Persone" / "matt.jpg")
+
+    result = runner.invoke(cli, ["verify"])
+    assert "Renamed" in result.output
+    assert "matt.jpg" in result.output
+
+    # fix it
+    result = runner.invoke(cli, ["verify", "--fix"])
+    assert "[fixed]" in result.output
+
+    # should be clean now
+    result = runner.invoke(cli, ["verify"])
+    assert "All good" in result.output

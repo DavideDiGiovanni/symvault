@@ -176,6 +176,77 @@ def is_ignored(rel_path, patterns):
 
 
 # ---------------------------------------------------------------------------
+# Verify helpers
+# ---------------------------------------------------------------------------
+
+def is_vault_symlink_path(path: Path, vault_root: Path) -> bool:
+    """Return True if path is a symlink pointing into .vault/objects/."""
+    if not path.is_symlink():
+        return False
+    try:
+        target = str(path.resolve())
+    except OSError:
+        return False
+    return str((vault_root / OBJECTS_DIR).resolve()) in target
+
+
+def hash_from_blob_path(blob_target, root):
+    """Extract hash from a vault blob path like .vault/objects/ab/cdef1234...ext"""
+    try:
+        rel = os.path.relpath(Path(blob_target).resolve(), root / OBJECTS_DIR)
+        parts = Path(rel).parts
+        if len(parts) == 2:
+            shard, name = parts
+            return shard + os.path.splitext(name)[0]
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def find_vault_symlinks(root, db_links):
+    """Walk filesystem to find symlinks pointing into .vault/objects/.
+    Uses os.scandir for cached stat results."""
+    vault_objects = str((root / OBJECTS_DIR).resolve())
+    found = {}
+
+    walk_roots = {str(root)}
+    for rel_path in db_links:
+        parts = Path(rel_path).parts
+        if parts and parts[0] == "..":
+            non_dotdot = [i for i, x in enumerate(parts) if x != ".."]
+            if non_dotdot:
+                top = root / Path(*parts[:non_dotdot[0] + 1])
+                walk_roots.add(str(top.resolve()))
+
+    def _scan_dir(directory):
+        try:
+            entries = os.scandir(directory)
+        except (PermissionError, OSError):
+            return
+        with entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    rel_dir = os.path.relpath(entry.path, root)
+                    if VAULT_DIR not in Path(rel_dir).parts:
+                        _scan_dir(entry.path)
+                elif entry.is_symlink():
+                    try:
+                        target = str(Path(entry.path).resolve())
+                    except OSError:
+                        continue
+                    if vault_objects in target:
+                        rel = os.path.relpath(entry.path, root)
+                        h = hash_from_blob_path(target, root)
+                        if h:
+                            found[rel] = h
+
+    for wr in walk_roots:
+        if Path(wr).exists():
+            _scan_dir(wr)
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
