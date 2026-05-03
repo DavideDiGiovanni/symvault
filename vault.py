@@ -634,5 +634,73 @@ def verify(fix):
     click.echo(f"\nFixed {click.style(str(fixed), fg='green')} issue(s).")
 
 
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Show what would be cleaned without making changes.")
+def gc(dry_run):
+    """Garbage collect: remove orphan blobs, stale DB entries, and empty shard dirs."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    lock = acquire_lock(root) if not dry_run else None
+    db = get_db(root)
+    cleaned = 0
+
+    for (orig,) in db.execute("SELECT original_path FROM links"):
+        if not (root / orig).exists():
+            if dry_run:
+                click.echo(click.style("[stale link] ", fg="red") + orig)
+            else:
+                db.execute("DELETE FROM links WHERE original_path = ?", (orig,))
+            cleaned += 1
+
+    for h, vp in db.execute(
+        "SELECT hash, vault_path FROM files WHERE hash NOT IN (SELECT DISTINCT hash FROM links)"
+    ):
+        if dry_run:
+            click.echo(click.style("[unreferenced] ", fg="magenta") + vp)
+        else:
+            blob = root / vp
+            if blob.exists():
+                blob.unlink()
+            db.execute("DELETE FROM files WHERE hash = ?", (h,))
+        cleaned += 1
+
+    objects_dir = root / OBJECTS_DIR
+    if objects_dir.exists():
+        known = {r[0] for r in db.execute("SELECT vault_path FROM files")}
+        for shard in objects_dir.iterdir():
+            if not shard.is_dir():
+                continue
+            for blob in shard.iterdir():
+                rel = str(blob.relative_to(root))
+                if rel not in known:
+                    if dry_run:
+                        click.echo(click.style("[orphan blob] ", fg="magenta") + rel)
+                    else:
+                        blob.unlink()
+                    cleaned += 1
+
+    if not dry_run:
+        if objects_dir.exists():
+            for shard in objects_dir.iterdir():
+                if shard.is_dir():
+                    try:
+                        shard.rmdir()
+                    except OSError:
+                        pass
+        db.commit()
+    db.close()
+    if lock:
+        release_lock(lock)
+
+    if cleaned:
+        verb = "would be cleaned" if dry_run else "cleaned"
+        click.echo(f"{click.style(str(cleaned), fg='green')} item(s) {verb}.")
+    else:
+        click.echo(click.style("Nothing to clean.", fg="green"))
+
+
 if __name__ == "__main__":
     cli()
