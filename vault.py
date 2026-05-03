@@ -15,6 +15,7 @@ from vault_lib import (
     find_vault_root, get_db, acquire_lock, release_lock,
     sha256_file, vault_blob_path, make_vault_symlink, now_iso,
     load_ignore_patterns, is_ignored,
+    find_vault_symlinks, hash_from_blob_path,
     human_size, is_glob, expand_paths,
 )
 
@@ -466,6 +467,171 @@ def delete(path, dry_run, yes):
         db.close()
         if lock:
             release_lock(lock)
+
+
+@cli.command()
+@click.option("--fix", is_flag=True, help="Auto-correct detected issues.")
+def verify(fix):
+    """Verify vault integrity and detect changes."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    lock = acquire_lock(root)
+    db = get_db(root)
+
+    db_links = {r[0]: r[1] for r in db.execute("SELECT original_path, hash FROM links")}
+    disk_links = find_vault_symlinks(root, db_links)
+
+    missing, untracked = {}, {}
+    for path, h in db_links.items():
+        if path not in disk_links:
+            missing[path] = h
+    for path, h in disk_links.items():
+        if path not in db_links:
+            untracked[path] = h
+
+    # Detect renames
+    renames, missing_by_hash = [], {}
+    for path, h in missing.items():
+        missing_by_hash.setdefault(h, []).append(path)
+    matched_missing, matched_untracked = set(), set()
+    for new_path, h in untracked.items():
+        if h in missing_by_hash and missing_by_hash[h]:
+            old_path = missing_by_hash[h].pop(0)
+            renames.append((old_path, new_path, h))
+            matched_missing.add(old_path)
+            matched_untracked.add(new_path)
+
+    deleted = {p: h for p, h in missing.items() if p not in matched_missing}
+    new_untracked_raw = {p: h for p, h in untracked.items() if p not in matched_untracked}
+    known_hashes = {r[0] for r in db.execute("SELECT hash FROM files")}
+    new_untracked = {p: h for p, h in new_untracked_raw.items() if h in known_hashes}
+    broken_symlinks = {p: h for p, h in new_untracked_raw.items() if h not in known_hashes}
+
+    # Blob integrity
+    corrupt, missing_blobs = [], []
+    for file_hash, vault_path, blob_mtime, blob_size in db.execute(
+        "SELECT hash, vault_path, blob_mtime, blob_size FROM files"
+    ):
+        blob = root / vault_path
+        if not blob.exists():
+            missing_blobs.append((file_hash, vault_path))
+            continue
+        st = blob.stat()
+        if blob_mtime is not None and st.st_mtime == blob_mtime and st.st_size == blob_size:
+            continue
+        actual = sha256_file(blob)
+        if actual != file_hash:
+            corrupt.append((vault_path, file_hash, actual))
+        else:
+            db.execute("UPDATE files SET blob_mtime = ?, blob_size = ? WHERE hash = ?",
+                       (st.st_mtime, st.st_size, file_hash))
+
+    # Orphan blobs on disk
+    orphan_blobs = []
+    objects_dir = root / OBJECTS_DIR
+    if objects_dir.exists():
+        known_vp = {r[0] for r in db.execute("SELECT vault_path FROM files")}
+        for shard in objects_dir.iterdir():
+            if not shard.is_dir():
+                continue
+            for blob in shard.iterdir():
+                rel = str(blob.relative_to(root))
+                if rel not in known_vp:
+                    orphan_blobs.append(rel)
+
+    unreferenced = db.execute(
+        "SELECT hash, vault_path FROM files WHERE hash NOT IN (SELECT DISTINCT hash FROM links)"
+    ).fetchall()
+
+    # Output
+    total_issues = 0
+    sections = [
+        ("Renamed:", "yellow", [(f"  {o} → {n}",) for o, n, _ in renames]),
+        ("Deleted (symlink removed from disk):", "red", [(f"  {p}",) for p in deleted]),
+        ("Untracked (symlink on disk, not in DB):", "cyan", [(f"  {p}",) for p in new_untracked]),
+        ("Broken (symlink to missing blob, not recoverable):", "red", [(f"  {p}",) for p in broken_symlinks]),
+        ("Corrupt (hash mismatch):", "red", [(f"  {vp} (expected {e[:12]}… got {a[:12]}…)",) for vp, e, a in corrupt]),
+        ("Missing blobs:", "red", [(f"  {vp}",) for _, vp in missing_blobs]),
+        ("Orphan blobs (on disk, not in DB):", "magenta", [(f"  {p}",) for p in orphan_blobs]),
+        ("Unreferenced blobs (in DB, no symlinks):", "magenta", [(f"  {vp}",) for _, vp in unreferenced]),
+    ]
+    for title, color, items in sections:
+        if items:
+            bold = color == "red" and title not in ("Renamed:", "Deleted (symlink removed from disk):")
+            click.echo(click.style(title, fg=color, bold=bold))
+            for (line,) in items:
+                click.echo(line)
+            click.echo()
+            total_issues += len(items)
+
+    if total_issues == 0:
+        click.echo(click.style("All good. No issues found.", fg="green"))
+        db.commit()
+        db.close()
+        release_lock(lock)
+        return
+
+    click.echo(f"{total_issues} issue(s) found.")
+    if not fix:
+        click.echo('Run with --fix to auto-correct.')
+        db.commit()
+        db.close()
+        release_lock(lock)
+        return
+
+    # Fix
+    fixed = 0
+    for old, new, h in renames:
+        db.execute("UPDATE links SET original_path = ? WHERE original_path = ?", (new, old))
+        click.echo(click.style("  [fixed] ", fg="green") + f"renamed: {old} → {new}")
+        fixed += 1
+    for p in deleted:
+        db.execute("DELETE FROM links WHERE original_path = ?", (p,))
+        click.echo(click.style("  [fixed] ", fg="green") + f"removed link: {p}")
+        fixed += 1
+    for p, h in new_untracked.items():
+        fpath = root / p
+        try:
+            st, lst = fpath.stat(), fpath.lstat()
+            db.execute("INSERT OR REPLACE INTO links (original_path, hash, created, mtime, size, inode) VALUES (?, ?, ?, ?, ?, ?)",
+                       (p, h, now_iso(), st.st_mtime, st.st_size, lst.st_ino))
+            click.echo(click.style("  [fixed] ", fg="green") + f"tracked: {p}")
+            fixed += 1
+        except OSError:
+            pass
+    for p in broken_symlinks:
+        fpath = root / p
+        if fpath.is_symlink():
+            fpath.unlink()
+            click.echo(click.style("  [fixed] ", fg="green") + f"removed broken: {p}")
+            fixed += 1
+    for p in orphan_blobs:
+        (root / p).unlink()
+        try:
+            (root / p).parent.rmdir()
+        except OSError:
+            pass
+        click.echo(click.style("  [fixed] ", fg="green") + f"removed orphan: {p}")
+        fixed += 1
+    for h, vp in unreferenced:
+        blob = root / vp
+        if blob.exists():
+            blob.unlink()
+            try:
+                blob.parent.rmdir()
+            except OSError:
+                pass
+        db.execute("DELETE FROM files WHERE hash = ?", (h,))
+        click.echo(click.style("  [fixed] ", fg="green") + f"removed unreferenced: {vp}")
+        fixed += 1
+
+    db.commit()
+    db.close()
+    release_lock(lock)
+    click.echo(f"\nFixed {click.style(str(fixed), fg='green')} issue(s).")
 
 
 if __name__ == "__main__":
