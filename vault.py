@@ -702,5 +702,69 @@ def gc(dry_run):
         click.echo(click.style("Nothing to clean.", fg="green"))
 
 
+@cli.command()
+@click.argument("dest", required=False, default=None, type=click.Path())
+@click.option("--dry-run", is_flag=True, help="Show what would be created.")
+@click.option("-v", "--verbose", is_flag=True, help="Show each symlink being created.")
+def rebuild(dest, dry_run, verbose):
+    """Recreate symlinks from DB. Without DEST, restore in original paths. With DEST, rebuild there and update DB."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    relocate = dest is not None
+    lock = acquire_lock(root) if not dry_run else None
+    db = get_db(root)
+    rows = db.execute(
+        "SELECT l.original_path, f.vault_path, l.hash FROM links l JOIN files f ON l.hash = f.hash"
+    ).fetchall()
+
+    if not rows:
+        click.echo("Nothing to rebuild (no links in DB).")
+        db.close()
+        return
+
+    dest = Path(dest).resolve() if relocate else root
+    count = 0
+    for orig, vault_rel, file_hash in rows:
+        blob = root / vault_rel
+        if relocate:
+            parts = Path(orig).parts
+            clean = Path(*[p for p in parts if p != ".."]) if any(p == ".." for p in parts) else Path(orig)
+            target_path = dest / clean
+            new_rel = os.path.relpath(target_path, root)
+        else:
+            target_path = root / orig
+            new_rel = None
+
+        if dry_run:
+            click.echo(f"[link] {target_path.relative_to(dest)}")
+            count += 1
+            continue
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if target_path.exists() or target_path.is_symlink():
+            target_path.unlink()
+        make_vault_symlink(blob, target_path)
+        if verbose:
+            click.echo(f"  {os.path.relpath(target_path, dest)} → {vault_rel}")
+        if relocate and new_rel != orig:
+            st, lst = target_path.stat(), target_path.lstat()
+            db.execute("DELETE FROM links WHERE original_path = ?", (orig,))
+            db.execute(
+                "INSERT OR REPLACE INTO links (original_path, hash, created, mtime, size, inode) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_rel, file_hash, now_iso(), st.st_mtime, st.st_size, lst.st_ino),
+            )
+        count += 1
+
+    if relocate and not dry_run:
+        db.commit()
+    db.close()
+    if lock:
+        release_lock(lock)
+    click.echo(f"Rebuilt {click.style(str(count), fg='green')} symlink(s) in {dest}")
+
+
 if __name__ == "__main__":
     cli()
