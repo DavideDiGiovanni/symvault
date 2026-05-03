@@ -305,3 +305,78 @@ def test_verify_rename(vault_env):
     # should be clean now
     result = runner.invoke(cli, ["verify"])
     assert "All good" in result.output
+
+# ── Test: gc ─────────────────────────────────────────────────────────────
+
+def test_gc(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    _make_file(root / "b.jpg", 20)
+    runner.invoke(cli, ["scan", "."])
+
+    # remove a symlink manually (creates stale link + eventually unreferenced blob)
+    (root / "a.jpg").unlink()
+
+    # create orphan blob
+    orphan_dir = root / ".vault" / "objects" / "zz"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    (orphan_dir / "orphan.dat").write_text("orphan")
+
+    # dry-run
+    result = runner.invoke(cli, ["gc", "--dry-run"])
+    assert result.exit_code == 0
+    assert "stale link" in result.output
+    assert "orphan blob" in result.output
+
+    # actual gc
+    result = runner.invoke(cli, ["gc"])
+    assert result.exit_code == 0
+    assert "cleaned" in result.output
+
+    # orphan blob gone
+    assert not (orphan_dir / "orphan.dat").exists()
+
+    # verify should be clean (only b.jpg remains)
+    result = runner.invoke(cli, ["verify"])
+    assert "All good" in result.output
+
+
+# ── Test 15: Rebuild in-place ────────────────────────────────────────────
+
+def test_rebuild_inplace(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    _make_file(root / "b.jpg", 20)
+    runner.invoke(cli, ["scan", "."])
+
+    # remove symlinks manually (simulate broken state)
+    (root / "a.jpg").unlink()
+    (root / "b.jpg").unlink()
+
+    result = runner.invoke(cli, ["rebuild"])
+    assert result.exit_code == 0
+    assert "Rebuilt 2 symlink(s)" in result.output
+
+    assert _is_vault_symlink(root / "a.jpg")
+    assert _is_vault_symlink(root / "b.jpg")
+
+
+# ── Test 16: Rebuild to another destination ──────────────────────────────
+
+def test_rebuild_dest(vault_env, tmp_path):
+    root, runner = vault_env
+    _make_file(root / "Persone" / "matteo.jpg", 50)
+    runner.invoke(cli, ["scan", "."])
+
+    dest = tmp_path / "rebuilt"
+    result = runner.invoke(cli, ["rebuild", str(dest)])
+    assert result.exit_code == 0
+    assert "Rebuilt 1 symlink(s)" in result.output
+    assert (dest / "Persone" / "matteo.jpg").is_symlink()
+
+    # dry-run
+    dest2 = tmp_path / "rebuilt2"
+    result = runner.invoke(cli, ["rebuild", "--dry-run", str(dest2)])
+    assert result.exit_code == 0
+    assert "[link]" in result.output
+    assert not dest2.exists()
