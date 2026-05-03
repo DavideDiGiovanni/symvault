@@ -634,5 +634,137 @@ def verify(fix):
     click.echo(f"\nFixed {click.style(str(fixed), fg='green')} issue(s).")
 
 
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Show what would be cleaned without making changes.")
+def gc(dry_run):
+    """Garbage collect: remove orphan blobs, stale DB entries, and empty shard dirs."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    lock = acquire_lock(root) if not dry_run else None
+    db = get_db(root)
+    cleaned = 0
+
+    for (orig,) in db.execute("SELECT original_path FROM links"):
+        if not (root / orig).exists():
+            if dry_run:
+                click.echo(click.style("[stale link] ", fg="red") + orig)
+            else:
+                db.execute("DELETE FROM links WHERE original_path = ?", (orig,))
+            cleaned += 1
+
+    for h, vp in db.execute(
+        "SELECT hash, vault_path FROM files WHERE hash NOT IN (SELECT DISTINCT hash FROM links)"
+    ):
+        if dry_run:
+            click.echo(click.style("[unreferenced] ", fg="magenta") + vp)
+        else:
+            blob = root / vp
+            if blob.exists():
+                blob.unlink()
+            db.execute("DELETE FROM files WHERE hash = ?", (h,))
+        cleaned += 1
+
+    objects_dir = root / OBJECTS_DIR
+    if objects_dir.exists():
+        known = {r[0] for r in db.execute("SELECT vault_path FROM files")}
+        for shard in objects_dir.iterdir():
+            if not shard.is_dir():
+                continue
+            for blob in shard.iterdir():
+                rel = str(blob.relative_to(root))
+                if rel not in known:
+                    if dry_run:
+                        click.echo(click.style("[orphan blob] ", fg="magenta") + rel)
+                    else:
+                        blob.unlink()
+                    cleaned += 1
+
+    if not dry_run:
+        if objects_dir.exists():
+            for shard in objects_dir.iterdir():
+                if shard.is_dir():
+                    try:
+                        shard.rmdir()
+                    except OSError:
+                        pass
+        db.commit()
+    db.close()
+    if lock:
+        release_lock(lock)
+
+    if cleaned:
+        verb = "would be cleaned" if dry_run else "cleaned"
+        click.echo(f"{click.style(str(cleaned), fg='green')} item(s) {verb}.")
+    else:
+        click.echo(click.style("Nothing to clean.", fg="green"))
+
+
+@cli.command()
+@click.argument("dest", required=False, default=None, type=click.Path())
+@click.option("--dry-run", is_flag=True, help="Show what would be created.")
+@click.option("-v", "--verbose", is_flag=True, help="Show each symlink being created.")
+def rebuild(dest, dry_run, verbose):
+    """Recreate symlinks from DB. Without DEST, restore in original paths. With DEST, rebuild there and update DB."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    relocate = dest is not None
+    lock = acquire_lock(root) if not dry_run else None
+    db = get_db(root)
+    rows = db.execute(
+        "SELECT l.original_path, f.vault_path, l.hash FROM links l JOIN files f ON l.hash = f.hash"
+    ).fetchall()
+
+    if not rows:
+        click.echo("Nothing to rebuild (no links in DB).")
+        db.close()
+        return
+
+    dest = Path(dest).resolve() if relocate else root
+    count = 0
+    for orig, vault_rel, file_hash in rows:
+        blob = root / vault_rel
+        if relocate:
+            parts = Path(orig).parts
+            clean = Path(*[p for p in parts if p != ".."]) if any(p == ".." for p in parts) else Path(orig)
+            target_path = dest / clean
+            new_rel = os.path.relpath(target_path, root)
+        else:
+            target_path = root / orig
+            new_rel = None
+
+        if dry_run:
+            click.echo(f"[link] {target_path.relative_to(dest)}")
+            count += 1
+            continue
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if target_path.exists() or target_path.is_symlink():
+            target_path.unlink()
+        make_vault_symlink(blob, target_path)
+        if verbose:
+            click.echo(f"  {os.path.relpath(target_path, dest)} → {vault_rel}")
+        if relocate and new_rel != orig:
+            st, lst = target_path.stat(), target_path.lstat()
+            db.execute("DELETE FROM links WHERE original_path = ?", (orig,))
+            db.execute(
+                "INSERT OR REPLACE INTO links (original_path, hash, created, mtime, size, inode) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_rel, file_hash, now_iso(), st.st_mtime, st.st_size, lst.st_ino),
+            )
+        count += 1
+
+    if relocate and not dry_run:
+        db.commit()
+    db.close()
+    if lock:
+        release_lock(lock)
+    click.echo(f"Rebuilt {click.style(str(count), fg='green')} symlink(s) in {dest}")
+
+
 if __name__ == "__main__":
     cli()
