@@ -380,3 +380,220 @@ def test_rebuild_dest(vault_env, tmp_path):
     assert result.exit_code == 0
     assert "[link]" in result.output
     assert not dest2.exists()
+
+# ── Test: list ───────────────────────────────────────────────────────────
+
+def test_list(vault_env):
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 10)
+    shutil.copy2(root / "a.jpg", root / "b.jpg")
+    runner.invoke(cli, ["scan", "."])
+
+    # get hash from DB
+    import sqlite3
+    db = sqlite3.connect(str(root / ".vault" / "vault.db"))
+    full_hash = db.execute("SELECT hash FROM files").fetchone()[0]
+    db.close()
+
+    # full hash
+    result = runner.invoke(cli, ["list", full_hash])
+    assert result.exit_code == 0
+    assert "a.jpg" in result.output
+    assert "b.jpg" in result.output
+
+    # prefix (first 8 chars)
+    result = runner.invoke(cli, ["list", full_hash[:8]])
+    assert result.exit_code == 0
+    assert "a.jpg" in result.output
+
+    # non-existent
+    result = runner.invoke(cli, ["list", "0000000000"])
+    assert result.exit_code == 1
+
+
+# ── Tests: vault cp ──────────────────────────────────────────────────────
+
+def test_cp_single_file(vault_env):
+    """Copy a single vault symlink, verify content identical to blob."""
+    root, runner = vault_env
+    _make_file(root / "photo.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+    assert _is_vault_symlink(root / "photo.jpg")
+
+    blob_content = (root / "photo.jpg").resolve().read_bytes()
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", str(root / "photo.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert (dest / "photo.jpg").is_file()
+    assert (dest / "photo.jpg").read_bytes() == blob_content
+
+
+def test_cp_creates_dest_dir(vault_env):
+    """Non-existing destination is created automatically."""
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    dest = root / "out" / "nested" / "dir"
+    assert not dest.exists()
+    result = runner.invoke(cli, ["cp", str(root / "a.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert dest.is_dir()
+    assert (dest / "a.jpg").is_file()
+
+
+def test_cp_missing_blob_error(vault_env):
+    """Symlink with missing blob produces error, exit code 0 (continues)."""
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    # Remove the blob to simulate missing blob
+    blob = (root / "a.jpg").resolve()
+    blob.unlink()
+
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", str(root / "a.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert "blob missing" in (result.output + (result.stderr or ""))
+    assert not (dest / "a.jpg").exists()
+
+
+def test_cp_glob_no_match_warning(vault_env):
+    """Glob with no matches produces warning."""
+    root, runner = vault_env
+    dest = root / "export"
+    dest.mkdir()
+    result = runner.invoke(cli, ["cp", str(root / "*.xyz"), str(dest)])
+    assert result.exit_code == 0
+    combined = (result.stderr or "") + result.output
+    assert "no vault files match" in combined
+
+
+def test_cp_empty_dir_warning(vault_env):
+    """Directory without vault symlinks produces warning."""
+    root, runner = vault_env
+    empty = root / "emptydir"
+    empty.mkdir()
+
+    dest = root / "export"
+    dest.mkdir()
+    result = runner.invoke(cli, ["cp", str(empty), str(dest)])
+    assert result.exit_code == 0
+    combined = (result.stderr or "") + result.output
+    assert "no vault files in" in combined
+
+
+def test_cp_overwrite_default(vault_env):
+    """Existing file in destination is overwritten by default."""
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    dest = root / "export"
+    dest.mkdir()
+    (dest / "a.jpg").write_text("old content")
+
+    result = runner.invoke(cli, ["cp", str(root / "a.jpg"), str(dest)])
+    assert result.exit_code == 0
+    # Content should be the blob, not "old content"
+    blob_content = (root / "a.jpg").resolve().read_bytes()
+    assert (dest / "a.jpg").read_bytes() == blob_content
+
+
+def test_cp_verbose_output(vault_env):
+    """Verbose output shows source and destination paths."""
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", "-v", str(root / "a.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert "a.jpg" in result.output
+    assert str(dest) in result.output
+
+
+def test_cp_io_error_continues(vault_env):
+    """I/O error on one file, others are copied."""
+    root, runner = vault_env
+
+    sub = root / "files"
+    sub.mkdir()
+    _make_file(sub / "ok.jpg", 5)
+    _make_file(sub / "fail.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    # Remove blob for fail.jpg to trigger an error
+    blob_fail = (sub / "fail.jpg").resolve()
+    blob_fail.unlink()
+
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", str(sub), str(dest)])
+    assert result.exit_code == 0
+    assert (dest / "ok.jpg").is_file()
+    combined = (result.stderr or "") + result.output
+    assert "error" in combined.lower()
+
+
+def test_cp_error_count_in_summary(vault_env):
+    """Error count in final summary."""
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    blob = (root / "a.jpg").resolve()
+    blob.unlink()
+
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", str(root / "a.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert "1 error(s)" in result.output
+
+
+def test_cp_multiple_sources(vault_env):
+    """Multiple sources (file + directory) in same destination."""
+    root, runner = vault_env
+    _make_file(root / "single.jpg", 5)
+    subdir = root / "photos"
+    subdir.mkdir()
+    _make_file(subdir / "p1.jpg", 5)
+    _make_file(subdir / "p2.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", str(root / "single.jpg"), str(subdir), str(dest)])
+    assert result.exit_code == 0
+    assert (dest / "single.jpg").is_file()
+    assert (dest / "p1.jpg").is_file()
+    assert (dest / "p2.jpg").is_file()
+
+
+def test_cp_dest_is_last_arg(vault_env):
+    """Destination is the last argument."""
+    root, runner = vault_env
+    _make_file(root / "x.jpg", 5)
+    _make_file(root / "y.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    dest = root / "target"
+    result = runner.invoke(cli, ["cp", str(root / "x.jpg"), str(root / "y.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert (dest / "x.jpg").is_file()
+    assert (dest / "y.jpg").is_file()
+
+
+def test_cp_no_lock_acquired(vault_env):
+    """No lock file created during cp."""
+    root, runner = vault_env
+    _make_file(root / "a.jpg", 5)
+    runner.invoke(cli, ["scan", "."])
+
+    lock_file = root / ".vault" / "lock"
+    if lock_file.exists():
+        lock_file.unlink()
+
+    dest = root / "export"
+    result = runner.invoke(cli, ["cp", str(root / "a.jpg"), str(dest)])
+    assert result.exit_code == 0
+    assert not lock_file.exists()
