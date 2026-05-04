@@ -17,6 +17,7 @@ from vault_lib import (
     load_ignore_patterns, is_ignored,
     find_vault_symlinks, hash_from_blob_path,
     human_size, is_glob, expand_paths,
+    is_vault_symlink_path, collect_vault_symlinks,
 )
 
 
@@ -764,6 +765,126 @@ def rebuild(dest, dry_run, verbose):
     if lock:
         release_lock(lock)
     click.echo(f"Rebuilt {click.style(str(count), fg='green')} symlink(s) in {dest}")
+
+
+@cli.command("list")
+@click.argument("hash_prefix")
+def list_cmd(hash_prefix):
+    """Show all symlinks pointing to a blob (by hash or prefix)."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    db = get_db(root)
+    row = db.execute("SELECT hash, vault_path, size FROM files WHERE hash LIKE ?", (hash_prefix + "%",)).fetchone()
+    if not row:
+        click.echo(f"No blob matching: {hash_prefix}", err=True)
+        db.close()
+        raise SystemExit(1)
+
+    file_hash, vault_path, size = row
+    links = db.execute("SELECT original_path FROM links WHERE hash = ?", (file_hash,)).fetchall()
+    db.close()
+
+    click.echo(click.style(f"{file_hash[:12]}… ({human_size(size)})", fg="yellow"))
+    click.echo(f"  blob: {vault_path}")
+    if links:
+        click.echo(f"  symlinks ({len(links)}):")
+        for (p,) in links:
+            click.echo(f"    {p}")
+    else:
+        click.echo(click.style("  no symlinks (unreferenced)", fg="magenta"))
+
+
+@cli.command()
+@click.argument("args", nargs=-1)
+@click.option("--dry-run", is_flag=True, help="Show what would be copied without making changes.")
+@click.option("--no-overwrite", is_flag=True, help="Skip files that already exist in destination.")
+@click.option("-v", "--verbose", is_flag=True, help="Show each file being copied.")
+def cp(args, dry_run, no_overwrite, verbose):
+    """Copy vault files to a destination, restoring original names."""
+    if len(args) < 2:
+        click.echo("Usage: vault cp [OPTIONS] SOURCES... DEST", err=True)
+        raise SystemExit(1)
+
+    sources = args[:-1]
+    dest = Path(args[-1])
+
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found. Run 'vault init' first.", err=True)
+        raise SystemExit(1)
+
+    # Collect all symlinks from sources
+    all_items: list[tuple[Path, Path, Path]] = []  # (symlink, blob, rel_dest)
+
+    for src in sources:
+        src_path = Path(src)
+
+        if is_glob(src):
+            found = collect_vault_symlinks(src_path, root)
+            if not found:
+                click.echo(click.style(f"[warning] no vault files match: {src}", fg="yellow"), err=True)
+            all_items.extend(found)
+        elif src_path.absolute().is_dir():
+            found = collect_vault_symlinks(src_path, root)
+            if not found:
+                click.echo(click.style(f"[warning] no vault files in: {src}", fg="yellow"), err=True)
+            all_items.extend(found)
+        else:
+            abs_src = src_path.absolute()
+            if not is_vault_symlink_path(abs_src, root):
+                click.echo(click.style(f"[error] not a vault symlink: {src}", fg="red"), err=True)
+                continue
+            blob = abs_src.resolve()
+            all_items.append((abs_src, blob, Path(abs_src.name)))
+
+    stats = {"copied": 0, "skipped": 0, "errors": 0, "total_bytes": 0}
+
+    for symlink_path, blob_path, rel_path in all_items:
+        dest_path = dest / rel_path
+
+        if not blob_path.exists():
+            click.echo(click.style(f"[error] blob missing: {blob_path}", fg="red"), err=True)
+            stats["errors"] += 1
+            continue
+
+        if dry_run:
+            click.echo(f"[copy] {symlink_path} → {dest_path}")
+            stats["copied"] += 1
+            stats["total_bytes"] += blob_path.stat().st_size
+            continue
+
+        if no_overwrite and dest_path.exists():
+            click.echo(click.style(f"[skip] already exists: {dest_path}", fg="blue"), err=True)
+            stats["skipped"] += 1
+            continue
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(str(blob_path), str(dest_path))
+        except OSError as e:
+            dest_path.unlink(missing_ok=True)
+            click.echo(click.style(f"[error] copy failed ({e}): {symlink_path}", fg="red"), err=True)
+            stats["errors"] += 1
+            continue
+
+        file_size = dest_path.stat().st_size
+        stats["copied"] += 1
+        stats["total_bytes"] += file_size
+        if verbose:
+            click.echo(f"  {symlink_path} → {dest_path}")
+
+    # Summary
+    parts = [f"Copied {stats['copied']} file(s)"]
+    parts.append(f"{stats['skipped']} skipped")
+    if stats["errors"]:
+        parts.append(click.style(f"{stats['errors']} error(s)", fg="red"))
+    else:
+        parts.append(f"{stats['errors']} error(s)")
+    size_str = human_size(stats["total_bytes"])
+    click.echo(f"{', '.join(parts)} ({size_str} total)")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import click
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "0.2.0"
+VERSION = "1.0.0"
 VAULT_DIR = ".vault"
 OBJECTS_DIR = os.path.join(VAULT_DIR, "objects")
 DB_PATH = os.path.join(VAULT_DIR, "vault.db")
@@ -271,3 +271,58 @@ def expand_paths(patterns):
         else:
             result.append(Path(p).absolute())
     return result
+
+
+def collect_vault_symlinks(
+    source: Path,
+    vault_root: Path,
+    recursive: bool = True,
+) -> list[tuple[Path, Path, Path]]:
+    """Collect vault symlinks from a source path.
+
+    Returns list of (symlink_path, blob_path, relative_path) tuples.
+    - symlink_path: absolute path of the symlink
+    - blob_path: absolute path of the blob it points to
+    - relative_path: path relative to source (for preserving directory structure)
+    """
+    results: list[tuple[Path, Path, Path]] = []
+    source_str = str(source)
+
+    # Case 1: glob pattern
+    if is_glob(source_str):
+        for match in globmod.glob(source_str, recursive=True):
+            p = Path(match).absolute()
+            if is_vault_symlink_path(p, vault_root):
+                blob = p.resolve()
+                results.append((p, blob, Path(p.name)))
+        return results
+
+    source = source.absolute()
+
+    # Case 2: single file (or non-directory path)
+    if not source.is_dir():
+        if is_vault_symlink_path(source, vault_root):
+            blob = source.resolve()
+            results.append((source, blob, Path(source.name)))
+        return results
+
+    # Case 3: recursive directory traversal via os.scandir
+    def _scan(directory: Path) -> None:
+        try:
+            entries = os.scandir(directory)
+        except (PermissionError, OSError):
+            return
+        with entries:
+            for entry in entries:
+                entry_path = Path(entry.path).absolute()
+                if entry.is_dir(follow_symlinks=False):
+                    if recursive:
+                        _scan(entry_path)
+                elif entry.is_symlink():
+                    if is_vault_symlink_path(entry_path, vault_root):
+                        blob = entry_path.resolve()
+                        rel = entry_path.relative_to(source)
+                        results.append((entry_path, blob, rel))
+
+    _scan(source)
+    return results
