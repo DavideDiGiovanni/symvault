@@ -17,6 +17,7 @@ from vault_lib import (
     load_ignore_patterns, is_ignored,
     find_vault_symlinks, hash_from_blob_path,
     human_size, is_glob, expand_paths,
+    is_vault_symlink_path, collect_vault_symlinks,
 )
 
 
@@ -764,6 +765,36 @@ def rebuild(dest, dry_run, verbose):
     if lock:
         release_lock(lock)
     click.echo(f"Rebuilt {click.style(str(count), fg='green')} symlink(s) in {dest}")
+
+
+@cli.command("list")
+@click.argument("hash_prefix")
+def list_cmd(hash_prefix):
+    """Show all symlinks pointing to a blob (by hash or prefix)."""
+    root = find_vault_root()
+    if not root:
+        click.echo("No vault found.", err=True)
+        raise SystemExit(1)
+
+    db = get_db(root)
+    row = db.execute("SELECT hash, vault_path, size FROM files WHERE hash LIKE ?", (hash_prefix + "%",)).fetchone()
+    if not row:
+        click.echo(f"No blob matching: {hash_prefix}", err=True)
+        db.close()
+        raise SystemExit(1)
+
+    file_hash, vault_path, size = row
+    links = db.execute("SELECT original_path FROM links WHERE hash = ?", (file_hash,)).fetchall()
+    db.close()
+
+    click.echo(click.style(f"{file_hash[:12]}… ({human_size(size)})", fg="yellow"))
+    click.echo(f"  blob: {vault_path}")
+    if links:
+        click.echo(f"  symlinks ({len(links)}):")
+        for (p,) in links:
+            click.echo(f"    {p}")
+    else:
+        click.echo(click.style("  no symlinks (unreferenced)", fg="magenta"))
 
 
 if __name__ == "__main__":
