@@ -16,7 +16,7 @@ import click
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "0.2.0"
+VERSION = "1.0.0"
 VAULT_DIR = ".vault"
 OBJECTS_DIR = os.path.join(VAULT_DIR, "objects")
 DB_PATH = os.path.join(VAULT_DIR, "vault.db")
