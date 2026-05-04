@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from vault_lib import (
+from symvault_lib import (
     VERSION, VAULT_DIR, OBJECTS_DIR, SCHEMA, MIN_SIZE, DEFAULT_VAULTIGNORE,
     find_vault_root, get_db, acquire_lock, release_lock,
     sha256_file, vault_blob_path, make_vault_symlink, now_iso,
