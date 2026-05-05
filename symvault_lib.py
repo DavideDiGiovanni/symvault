@@ -1,4 +1,4 @@
-"""Vault library — constants, DB, filesystem, ignore helpers, utilities."""
+"""Symvault library — constants, DB, filesystem, ignore helpers, utilities."""
 
 import fcntl
 import fnmatch
@@ -17,7 +17,7 @@ import click
 # ---------------------------------------------------------------------------
 
 VERSION = "1.0.0"
-VAULT_DIR = ".vault"
+VAULT_DIR = ".symvault"
 OBJECTS_DIR = os.path.join(VAULT_DIR, "objects")
 DB_PATH = os.path.join(VAULT_DIR, "vault.db")
 LOCK_PATH = os.path.join(VAULT_DIR, "lock")
@@ -51,7 +51,7 @@ MIGRATIONS = [
 
 DEFAULT_VAULTIGNORE = (
     "# Patterns to exclude from vault (one per line, fnmatch syntax)\n"
-    ".vault\n.vaultignore\n*.tmp\n*.log\n"
+    ".symvault\n.symvaultignore\n*.tmp\n*.log\n"
 )
 
 
@@ -69,7 +69,7 @@ def _migrate_db(db):
 # ---------------------------------------------------------------------------
 
 def find_vault_root(start="."):
-    """Walk up from start to find the nearest .vault directory."""
+    """Walk up from start to find the nearest .symvault directory."""
     p = Path(start).resolve()
     while True:
         if (p / VAULT_DIR).is_dir():
@@ -148,8 +148,8 @@ def now_iso():
 # ---------------------------------------------------------------------------
 
 def load_ignore_patterns(root):
-    """Load glob patterns from .vaultignore, return compiled regexes."""
-    ignore_file = root / ".vaultignore"
+    """Load glob patterns from .symvaultignore, return compiled regexes."""
+    ignore_file = root / ".symvaultignore"
     if not ignore_file.exists():
         return []
     compiled = []
@@ -180,7 +180,7 @@ def is_ignored(rel_path, patterns):
 # ---------------------------------------------------------------------------
 
 def is_vault_symlink_path(path: Path, vault_root: Path) -> bool:
-    """Return True if path is a symlink pointing into .vault/objects/."""
+    """Return True if path is a symlink pointing into .symvault/objects/."""
     if not path.is_symlink():
         return False
     try:
@@ -191,7 +191,7 @@ def is_vault_symlink_path(path: Path, vault_root: Path) -> bool:
 
 
 def hash_from_blob_path(blob_target, root):
-    """Extract hash from a vault blob path like .vault/objects/ab/cdef1234...ext"""
+    """Extract hash from a vault blob path like .symvault/objects/ab/cdef1234...ext"""
     try:
         rel = os.path.relpath(Path(blob_target).resolve(), root / OBJECTS_DIR)
         parts = Path(rel).parts
@@ -204,7 +204,7 @@ def hash_from_blob_path(blob_target, root):
 
 
 def find_vault_symlinks(root, db_links):
-    """Walk filesystem to find symlinks pointing into .vault/objects/.
+    """Walk filesystem to find symlinks pointing into .symvault/objects/.
     Uses os.scandir for cached stat results."""
     vault_objects = str((root / OBJECTS_DIR).resolve())
     found = {}

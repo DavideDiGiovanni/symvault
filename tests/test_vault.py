@@ -27,9 +27,9 @@ def _make_file(path, size_kb):
 
 
 def _is_vault_symlink(path):
-    """Check if path is a symlink pointing into .vault/objects/."""
+    """Check if path is a symlink pointing into .symvault/objects/."""
     p = Path(path)
-    return p.is_symlink() and ".vault/objects/" in str(p.resolve())
+    return p.is_symlink() and ".symvault/objects/" in str(p.resolve())
 
 
 # ── Test 1: Init + Scan base ──────────────────────────────────────────────
@@ -38,10 +38,10 @@ def test_init_scan_base(vault_env):
     root, runner = vault_env
 
     # verify init created the right structure
-    assert (root / ".vault").is_dir()
-    assert (root / ".vault" / "objects").is_dir()
-    assert (root / ".vault" / "vault.db").is_file()
-    assert (root / ".vaultignore").is_file()
+    assert (root / ".symvault").is_dir()
+    assert (root / ".symvault" / "objects").is_dir()
+    assert (root / ".symvault" / "vault.db").is_file()
+    assert (root / ".symvaultignore").is_file()
 
     # create test files: matteo + copy (uscita03) + giulia
     _make_file(root / "Persone" / "matteo.jpg", 50)
@@ -117,13 +117,13 @@ def test_verbose(vault_env):
     assert "already in vault" in result.output
 
 
-# ── Test 13: .vaultignore ────────────────────────────────────────────────
+# ── Test 13: .symvaultignore ──────────────────────────────────────────────
 
 def test_vaultignore(vault_env):
     root, runner = vault_env
 
     # add *.dat to ignore
-    with open(root / ".vaultignore", "a") as f:
+    with open(root / ".symvaultignore", "a") as f:
         f.write("\n*.dat\n")
 
     _make_file(root / "test.dat", 5)
@@ -229,7 +229,7 @@ def test_revert_all(vault_env):
     assert not (root / "b.jpg").is_symlink()
 
     # objects dir should be empty
-    objects = root / ".vault" / "objects"
+    objects = root / ".symvault" / "objects"
     remaining = list(objects.rglob("*"))
     assert all(p.is_dir() for p in remaining)  # only empty dirs or nothing
 
@@ -276,7 +276,7 @@ def test_verify_orphan_blob(vault_env):
     runner.invoke(cli, ["scan", "."])
 
     # create orphan blob
-    orphan_dir = root / ".vault" / "objects" / "zz"
+    orphan_dir = root / ".symvault" / "objects" / "zz"
     orphan_dir.mkdir(parents=True, exist_ok=True)
     (orphan_dir / "test.dat").write_text("orphan")
 
@@ -318,7 +318,7 @@ def test_gc(vault_env):
     (root / "a.jpg").unlink()
 
     # create orphan blob
-    orphan_dir = root / ".vault" / "objects" / "zz"
+    orphan_dir = root / ".symvault" / "objects" / "zz"
     orphan_dir.mkdir(parents=True, exist_ok=True)
     (orphan_dir / "orphan.dat").write_text("orphan")
 
@@ -391,7 +391,7 @@ def test_list(vault_env):
 
     # get hash from DB
     import sqlite3
-    db = sqlite3.connect(str(root / ".vault" / "vault.db"))
+    db = sqlite3.connect(str(root / ".symvault" / "vault.db"))
     full_hash = db.execute("SELECT hash FROM files").fetchone()[0]
     db.close()
 
@@ -589,7 +589,7 @@ def test_cp_no_lock_acquired(vault_env):
     _make_file(root / "a.jpg", 5)
     runner.invoke(cli, ["scan", "."])
 
-    lock_file = root / ".vault" / "lock"
+    lock_file = root / ".symvault" / "lock"
     if lock_file.exists():
         lock_file.unlink()
 
