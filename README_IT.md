@@ -1,6 +1,6 @@
-# Vault – Content-Addressable File Deduplication
+# Symvault – Content-Addressable File Deduplication
 
-Vault è uno strumento CLI Python per la deduplicazione di file basata su content-addressing. Sostituisce i file duplicati con symlink verso un blob store centralizzato (`.vault/objects/`), risparmiando spazio disco e mantenendo la struttura originale delle cartelle navigabile.
+Symvault è uno strumento CLI Python per la deduplicazione di file basata su content-addressing. Sostituisce i file duplicati con symlink verso un blob store centralizzato (`.vault/objects/`), risparmiando spazio disco e mantenendo la struttura originale delle cartelle navigabile.
 
 ## Come funziona
 
@@ -23,5 +23,11 @@ pipx install .
 
 ```bash
 # Inizializza il vault nella directory corrente
-vault init
+symvault init
+
+# Scansione e deduplicazione
+symvault scan .
+
+# Statistiche
+symvault status
 ```
