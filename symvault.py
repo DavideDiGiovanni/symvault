@@ -22,7 +22,7 @@ from symvault_lib import (
 
 
 @click.group(context_settings={"max_content_width": 120})
-@click.version_option(VERSION, prog_name="vault")
+@click.version_option(VERSION, prog_name="symvault")
 def cli():
     """Vault – content-addressable file deduplication."""
     pass
