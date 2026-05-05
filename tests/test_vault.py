@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from vault import cli
+from symvault import cli
 
 
 @pytest.fixture
