@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/DavideDiGiovanni/symvault/actions/workflows/ci.yml/badge.svg)](https://github.com/DavideDiGiovanni/symvault/actions/workflows/ci.yml)
 
-Symvault is a Python CLI tool for content-addressable file deduplication. It replaces duplicate files with symlinks to a centralized blob store (`.vault/objects/`), saving disk space while keeping the original folder structure fully navigable.
+Symvault is a Python CLI tool for content-addressable file deduplication. It replaces duplicate files with symlinks to a centralized blob store (`.symvault/objects/`), saving disk space while keeping the original folder structure fully navigable.
 
 ## How It Works
 
-1. Files are hashed (SHA-256) and moved to `.vault/objects/` with git-style sharding (`ab/cdef...ext`)
+1. Files are hashed (SHA-256) and moved to `.symvault/objects/` with git-style sharding (`ab/cdef...ext`)
 2. The original file is replaced by a symlink pointing to the blob
 3. Duplicate files (same hash) share a single blob
-4. All metadata is tracked in a SQLite database (`.vault/vault.db`)
+4. All metadata is tracked in a SQLite database (`.symvault/vault.db`)
 5. Rescans are optimized: mtime/size/inode are compared before recalculating the hash
 
 ## Installation
@@ -70,7 +70,7 @@ symvault status
 - `--exclude` — glob pattern(s) to exclude from scan (repeatable)
 - `--no-overwrite` — skip existing files in destination (`cp` only)
 
-## .vaultignore
+## .symvaultignore
 
 A file in the vault root with glob patterns (one per line) to exclude files from scanning. Created automatically by `init` with sensible defaults.
 
@@ -81,7 +81,7 @@ A file in the vault root with glob patterns (one per line) to exclude files from
 SomeFolder/*
 ```
 
-Matching is done on both the full relative path and the basename. `.vaultignore` itself is always excluded.
+Matching is done on both the full relative path and the basename. `.symvaultignore` itself is always excluded.
 
 ## Platform Support
 

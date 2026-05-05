@@ -27,7 +27,7 @@ Paragone con fdupes/jdupes/rdfind su dataset reale. Risponde a "quanto spazio ri
 ## Priorità bassa
 
 ### `--exclude` inline
-Oltre a `.vaultignore`, supportare `--exclude "*.mp4"` direttamente nel comando scan. ✅ Completato.
+Oltre a `.symvaultignore`, supportare `--exclude "*.mp4"` direttamente nel comando scan. ✅ Completato.
 
 ### `status --json`
 Output machine-readable per scripting e integrazione con altri tool.
@@ -48,7 +48,7 @@ Solo riepilogo finale, nessun output intermedio.
 
 ## Completati
 
-- ✅ Lock file (`fcntl.flock` su `.vault/lock`, solo operazioni mutanti)
+- ✅ Lock file (`fcntl.flock` su `.symvault/lock`, solo operazioni mutanti)
 - ✅ Progress bar (`click.progressbar` con contatore, senza filename per evitare wrapping)
 - ✅ Graceful Ctrl+C (signal handler, commit parziale, nessuno stato intermedio)
 - ✅ Colori output (verde/giallo/rosso/blu/ciano/magenta con `click.style()`)
@@ -66,7 +66,7 @@ Solo riepilogo finale, nessun output intermedio.
 - ✅ Safe revert (copia su temp file, poi rename; nessuna perdita dati su errore)
 - ✅ Broken symlinks in verify (symlink a blob mancante, distinti da untracked)
 - ✅ `rebuild` dual mode (senza dest: in-place; con dest: ricrea + aggiorna DB)
-- ✅ `.vaultignore` hardcoded (escluso dalla raccolta candidati, non solo da pattern)
+- ✅ `.symvaultignore` hardcoded (escluso dalla raccolta candidati, non solo da pattern)
 - ✅ Fix lock leak in verify (release su tutti i return path)
 - ✅ Fix `relative_to` crash su path esterni (delete/revert)
 - ✅ Fix `resolve()` seguiva symlink in revert/delete (usato `absolute()`)
@@ -78,7 +78,7 @@ Solo riepilogo finale, nessun output intermedio.
 - ✅ Verify ottimizzato con cache mtime/size sui blob (skip hash se invariato)
 - ✅ Buffer SHA-256 da 1MB (riduce syscall su file grandi)
 - ✅ `PRAGMA synchronous=NORMAL` (meno fsync, rischio solo su power loss)
-- ✅ Pattern .vaultignore precompilati con `re.compile`
+- ✅ Pattern .symvaultignore precompilati con `re.compile`
 - ✅ `os.scandir` in `_find_vault_symlinks` (coerenza con scan)
 - ✅ Rimosso `sha256_partial` (codice morto)
 - ✅ Rimosso `executescript(SCHEMA)` ridondante (solo in init)

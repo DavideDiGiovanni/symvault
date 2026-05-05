@@ -40,7 +40,7 @@ def init():
     db = get_db(root)
     db.executescript(SCHEMA)
     db.close()
-    ignore = root / ".vaultignore"
+    ignore = root / ".symvaultignore"
     if not ignore.exists():
         ignore.write_text(DEFAULT_VAULTIGNORE)
     click.echo(f"Vault initialized in {click.style(str(root), fg='green')}")
@@ -86,7 +86,7 @@ def scan(paths, dry_run, verbose, exclude):
                     if VAULT_DIR not in Path(rel_dir).parts and not is_ignored(rel_dir, ignore_patterns):
                         _collect(entry.path)
                 elif entry.is_file(follow_symlinks=False) or entry.is_symlink():
-                    if entry.name == ".vaultignore":
+                    if entry.name == ".symvaultignore":
                         continue
                     try:
                         st = entry.stat()
@@ -367,7 +367,7 @@ def revert(paths, dry_run, verbose, yes):
                 click.echo(click.style(f"[error] blob missing: {vault_rel}", fg="red"), err=True)
                 errors += 1
                 continue
-            tmp = abs_orig.parent / (abs_orig.name + ".vault_tmp")
+            tmp = abs_orig.parent / (abs_orig.name + ".symvault_tmp")
             try:
                 shutil.copy2(str(abs_blob), str(tmp))
             except OSError as e:
