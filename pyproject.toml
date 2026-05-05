@@ -12,13 +12,13 @@ requires-python = ">=3.10"
 dependencies = ["click>=8.0"]
 
 [project.scripts]
-vault = "vault:cli"
+symvault = "symvault:cli"
 
 [project.optional-dependencies]
 dev = ["pytest"]
 
 [tool.setuptools]
-py-modules = ["vault", "vault_lib"]
+py-modules = ["symvault", "symvault_lib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

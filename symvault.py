@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from vault_lib import (
+from symvault_lib import (
     VERSION, VAULT_DIR, OBJECTS_DIR, SCHEMA, MIN_SIZE, DEFAULT_VAULTIGNORE,
     find_vault_root, get_db, acquire_lock, release_lock,
     sha256_file, vault_blob_path, make_vault_symlink, now_iso,
@@ -22,7 +22,7 @@ from vault_lib import (
 
 
 @click.group(context_settings={"max_content_width": 120})
-@click.version_option(VERSION, prog_name="vault")
+@click.version_option(VERSION, prog_name="symvault")
 def cli():
     """Vault – content-addressable file deduplication."""
     pass

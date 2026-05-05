@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-LINK="/usr/local/bin/vault"
+LINK="/usr/local/bin/symvault"
 
 if [ -L "$LINK" ]; then
     sudo rm "$LINK"
@@ -18,9 +18,9 @@ case "$SHELL_NAME" in
     *)    exit 0 ;;
 esac
 
-if grep -qF "VAULT_COMPLETE" "$RC" 2>/dev/null; then
-    sed -i '/# Vault CLI tab completion/d' "$RC"
-    sed -i '/_VAULT_COMPLETE/d' "$RC"
+if grep -qF "SYMVAULT_COMPLETE" "$RC" 2>/dev/null; then
+    sed -i '/# Symvault CLI tab completion/d' "$RC"
+    sed -i '/_SYMVAULT_COMPLETE/d' "$RC"
     echo "Tab completion removed from $RC"
     echo "Run: source $RC"
 else
