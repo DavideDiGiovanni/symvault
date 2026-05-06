@@ -14,8 +14,8 @@ build/
 *.swp
 *.swo
 
-# Vault runtime data
-.vault/
+# Symvault runtime data
+.symvault/
 
 # Testing
 .pytest_cache/
